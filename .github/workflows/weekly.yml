@@ -1,0 +1,64 @@
+name: Weekly Update Rules
+
+on:
+  schedule:
+    - cron: "0 0 * * 0"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Crawl sites
+        run: |
+          python "import requests.py" \
+            --max-pages 3000 \
+            --delay 0.5 \
+            --checkpoint-every 100 \
+            --state-file crawl_state.json \
+            --log-file crawl.log \
+            --site-output sites_raw.txt \
+            --max-path-depth 2
+
+      - name: Resolve redirects
+        run: |
+          python "import requests.py" \
+            --resolve-only \
+            --resolve-redirects \
+            --resolve-limit 2000 \
+            --state-file crawl_state.json \
+            --log-file crawl.log \
+            --site-output sites_raw.txt
+
+      - name: Build rules
+        run: |
+          python build_rules.py \
+            --input sites_raw.txt \
+            --output-sites sites.txt \
+            --output-rule rule-providers/sites.yaml \
+            --max-sites 2000
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add sites.txt rule-providers/sites.yaml
+          git diff --cached --quiet || git commit -m "Weekly update"
+
+      - name: Push
+        if: ${{ !cancelled() }}
+        run: |
+          git push

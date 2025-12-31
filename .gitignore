@@ -1,0 +1,8 @@
+# Crawl state/logs
+crawl_state.json
+crawl.log
+sites_raw.txt
+
+# Python
+__pycache__/
+*.pyc

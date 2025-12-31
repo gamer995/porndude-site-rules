@@ -73,6 +73,7 @@ def main():
     parser.add_argument("--input", default="sites_raw.txt")
     parser.add_argument("--output-sites", default="sites.txt")
     parser.add_argument("--output-rule", default="rule-providers/sites.yaml")
+    parser.add_argument("--output-weighted", default=None)
     parser.add_argument("--max-sites", type=int, default=2000)
     parser.add_argument("--state-file", default=None)
     args = parser.parse_args()
@@ -96,9 +97,16 @@ def main():
         ordered = ordered[:args.max_sites]
 
     write_outputs(ordered, output_sites, output_rule)
+    if args.output_weighted:
+        weighted_lines = [f"{host}\\t{weights.get(host, 0)}" for host in ordered]
+        Path(args.output_weighted).write_text(
+            "\n".join(weighted_lines) + "\n", encoding="utf-8"
+        )
     print(f"hosts: {len(ordered)}")
     print(f"wrote: {output_sites}")
     print(f"wrote: {output_rule}")
+    if args.output_weighted:
+        print(f"wrote: {args.output_weighted}")
 
 
 if __name__ == "__main__":

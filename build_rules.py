@@ -1,5 +1,6 @@
 import argparse
 import ipaddress
+import json
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -38,12 +39,42 @@ def write_outputs(hosts, output_sites, output_rule):
     output_rule.write_text("\n".join(payload) + "\n", encoding="utf-8")
 
 
+def load_weights(state_file):
+    if not state_file:
+        return {}
+    state_path = Path(state_file)
+    if not state_path.exists():
+        return {}
+    try:
+        state = json.loads(state_path.read_text("utf-8"))
+    except Exception:
+        return {}
+
+    counts = state.get("site_link_counts") or {}
+    if not counts:
+        counts = {link: 1 for link in state.get("site_links_raw", [])}
+    resolved = state.get("resolved_redirects", {})
+    allowed = state.get("allowed_domain")
+
+    weights = {}
+    for link, count in counts.items():
+        final = resolved.get(link, link)
+        host = extract_host(final)
+        if not host:
+            continue
+        if allowed and (host == allowed or host.endswith("." + allowed)):
+            continue
+        weights[host] = weights.get(host, 0) + count
+    return weights
+
+
 def main():
     parser = argparse.ArgumentParser(description="Build rule-providers from site list")
     parser.add_argument("--input", default="sites_raw.txt")
     parser.add_argument("--output-sites", default="sites.txt")
     parser.add_argument("--output-rule", default="rule-providers/sites.yaml")
     parser.add_argument("--max-sites", type=int, default=2000)
+    parser.add_argument("--state-file", default=None)
     args = parser.parse_args()
 
     input_path = Path(args.input)
@@ -59,7 +90,8 @@ def main():
         if host:
             hosts.add(host)
 
-    ordered = sorted(hosts)
+    weights = load_weights(args.state_file)
+    ordered = sorted(hosts, key=lambda h: (-weights.get(h, 0), h))
     if args.max_sites and len(ordered) > args.max_sites:
         ordered = ordered[:args.max_sites]
 

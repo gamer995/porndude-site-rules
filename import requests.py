@@ -275,6 +275,7 @@ def crawl_domains(
     queued_pages = set()
     site_urls = set()
     site_links_raw = set()
+    site_link_counts = {}
     resolved_redirects = {}
     url_scores = {}
     priority_queue = []
@@ -301,6 +302,7 @@ def crawl_domains(
         queued_pages = set(resume_state.get("queued_pages", []))
         site_urls = set(resume_state.get("site_urls", []))
         site_links_raw = set(resume_state.get("site_links_raw", []))
+        site_link_counts = dict(resume_state.get("site_link_counts", {}))
         resolved_redirects = dict(resume_state.get("resolved_redirects", {}))
         url_scores = dict(resume_state.get("url_scores", {}))
         priority_queue = [
@@ -321,6 +323,8 @@ def crawl_domains(
         if state_priority is not None and state_priority != priority:
             log_line("[!] 状态文件的 priority 与当前参数不一致，已按状态文件设置", log_fp)
             priority = state_priority
+        if not site_link_counts and site_links_raw:
+            site_link_counts = {link: 1 for link in site_links_raw}
 
     if priority and not priority_queue and q:
         for url in list(q):
@@ -392,6 +396,7 @@ def crawl_domains(
                     site_link = canonicalize_url(abs_url, KEEP_QUERY_KEYS, DROP_QUERY_KEYS)
                     if site_link:
                         site_links_raw.add(site_link)
+                        site_link_counts[site_link] = site_link_counts.get(site_link, 0) + 1
 
                 # 只在允许域名的站内继续爬，避免子串误命中
                 d = normalize_domain(clean_url)
@@ -423,6 +428,7 @@ def crawl_domains(
                 "queue": list(q),
                 "site_urls": list(site_urls),
                 "site_links_raw": list(site_links_raw),
+                "site_link_counts": site_link_counts,
                 "resolved_redirects": resolved_redirects,
                 "priority": priority,
                 "priority_queue": list(priority_queue),
@@ -440,6 +446,7 @@ def crawl_domains(
             "queue": list(q),
             "site_urls": list(site_urls),
             "site_links_raw": list(site_links_raw),
+            "site_link_counts": site_link_counts,
             "resolved_redirects": resolved_redirects,
             "priority": priority,
             "priority_queue": list(priority_queue),
@@ -448,9 +455,10 @@ def crawl_domains(
         save_state(state_file, state, log_fp=log_fp)
 
     resolved_sites = set(site_urls)
-    if site_links_raw:
+    host_weights = {}
+    if site_link_counts:
         redirect_links = []
-        for link in site_links_raw:
+        for link, count in site_link_counts.items():
             host = urlparse(link).netloc.lower()
             if host in REDIRECT_HOSTS:
                 redirect_links.append(link)
@@ -459,7 +467,7 @@ def crawl_domains(
                 if normalized_site:
                     site_host = normalize_domain(normalized_site)
                     if site_host and not is_allowed_domain(site_host, allowed_domain):
-                        resolved_sites.add(normalized_site)
+                        host_weights[site_host] = host_weights.get(site_host, 0) + count
 
         if resolve_redirects and redirect_links:
             to_resolve = [link for link in redirect_links if link not in resolved_redirects]
@@ -479,7 +487,7 @@ def crawl_domains(
             if normalized_site:
                 site_host = normalize_domain(normalized_site)
                 if site_host and not is_allowed_domain(site_host, allowed_domain):
-                    resolved_sites.add(normalized_site)
+                    host_weights[site_host] = host_weights.get(site_host, 0) + site_link_counts.get(link, 1)
 
         if unresolved:
             log_line(f"[!] 未解析跳转链接数量: {unresolved}", log_fp)
@@ -494,12 +502,16 @@ def crawl_domains(
             "queue": list(q),
             "site_urls": list(site_urls),
             "site_links_raw": list(site_links_raw),
+            "site_link_counts": site_link_counts,
             "resolved_redirects": resolved_redirects,
             "priority": priority,
             "priority_queue": list(priority_queue),
             "url_scores": url_scores
         }
         save_state(state_file, state, log_fp=log_fp)
+
+    if host_weights:
+        resolved_sites.update(host_weights.keys())
 
     return resolved_sites
 

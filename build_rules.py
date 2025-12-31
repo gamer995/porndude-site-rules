@@ -68,6 +68,20 @@ def load_weights(state_file):
     return weights
 
 
+def load_allowed(state_file):
+    if not state_file:
+        return None
+    state_path = Path(state_file)
+    if not state_path.exists():
+        return None
+    try:
+        state = json.loads(state_path.read_text("utf-8"))
+    except Exception:
+        return None
+    allowed = state.get("allowed_domain")
+    return allowed.lower().strip() if allowed else None
+
+
 def main():
     parser = argparse.ArgumentParser(description="Build rule-providers from site list")
     parser.add_argument("--input", default="sites_raw.txt")
@@ -92,9 +106,15 @@ def main():
             hosts.add(host)
 
     weights = load_weights(args.state_file)
+    allowed = load_allowed(args.state_file)
+    if allowed:
+        hosts.add(allowed)
+        weights[allowed] = max(weights.values(), default=0)
     ordered = sorted(hosts, key=lambda h: (-weights.get(h, 0), h))
     if args.max_sites and len(ordered) > args.max_sites:
         ordered = ordered[:args.max_sites]
+        if allowed and allowed not in ordered:
+            ordered[-1] = allowed
 
     write_outputs(ordered, output_sites, output_rule)
     if args.output_weighted:

@@ -6,6 +6,8 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse, parse_qsl, urlencode
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import heapq
+import itertools
 import time
 import urllib.robotparser
 
@@ -266,13 +268,17 @@ def crawl_domains(
     resolve_redirects=False,
     resolve_limit=0,
     resolve_only=False,
-    max_path_depth=DEFAULT_MAX_PATH_DEPTH
+    max_path_depth=DEFAULT_MAX_PATH_DEPTH,
+    priority=False
 ):
     visited_pages = set()
     queued_pages = set()
     site_urls = set()
     site_links_raw = set()
     resolved_redirects = {}
+    url_scores = {}
+    priority_queue = []
+    order_counter = itertools.count()
     robots_cache = {}
     last_request_time = {}
     session = requests.Session()
@@ -296,6 +302,14 @@ def crawl_domains(
         site_urls = set(resume_state.get("site_urls", []))
         site_links_raw = set(resume_state.get("site_links_raw", []))
         resolved_redirects = dict(resume_state.get("resolved_redirects", {}))
+        url_scores = dict(resume_state.get("url_scores", {}))
+        priority_queue = [
+            tuple(item) for item in resume_state.get("priority_queue", [])
+        ]
+        if priority_queue:
+            heapq.heapify(priority_queue)
+            max_order = max(item[1] for item in priority_queue)
+            order_counter = itertools.count(start=max_order + 1)
         q = deque(resume_state.get("queue", []))
         log_line(
             f"[+] 恢复状态: visited={len(visited_pages)}, queue={len(q)}, sites={len(site_urls)}",
@@ -303,18 +317,47 @@ def crawl_domains(
         )
         if "site_links_raw" not in resume_state and site_urls:
             log_line("[!] 状态文件缺少 site_links_raw，无法重新解析跳转；将仅继续追加新链接", log_fp)
+        state_priority = resume_state.get("priority")
+        if state_priority is not None and state_priority != priority:
+            log_line("[!] 状态文件的 priority 与当前参数不一致，已按状态文件设置", log_fp)
+            priority = state_priority
+
+    if priority and not priority_queue and q:
+        for url in list(q):
+            if url in visited_pages:
+                continue
+            url_scores[url] = max(url_scores.get(url, 0), 1)
+            heapq.heappush(priority_queue, (-url_scores[url], next(order_counter), url))
+        q = deque()
 
     if not q and not resolve_only:
         start_url = canonicalize_url(start_url, KEEP_QUERY_KEYS, DROP_QUERY_KEYS)
         if not start_url:
             log_line("[!] 起始 URL 非法", log_fp)
             return site_urls
-        q.append(start_url)
-        queued_pages.add(start_url)
+        if priority:
+            url_scores[start_url] = url_scores.get(start_url, 0) + 1
+            heapq.heappush(priority_queue, (-url_scores[start_url], next(order_counter), start_url))
+        else:
+            q.append(start_url)
+            queued_pages.add(start_url)
 
     if not resolve_only:
-        while q and len(visited_pages) < max_pages:
-            url = q.popleft()
+        def pop_next():
+            while priority_queue:
+                score, _, url = heapq.heappop(priority_queue)
+                score = -score
+                if url in visited_pages:
+                    continue
+                if url_scores.get(url, 0) != score:
+                    continue
+                return url
+            return None
+
+        while (priority_queue if priority else q) and len(visited_pages) < max_pages:
+            url = pop_next() if priority else q.popleft()
+            if not url:
+                break
             if url in visited_pages:
                 continue
             visited_pages.add(url)
@@ -357,9 +400,18 @@ def crawl_domains(
                     if parsed.scheme in ("http", "https"):
                         if not should_follow_path(parsed.path, max_path_depth):
                             continue
-                        if clean_url not in visited_pages and clean_url not in queued_pages:
-                            q.append(clean_url)
-                            queued_pages.add(clean_url)
+                        if priority:
+                            if clean_url in visited_pages:
+                                continue
+                            url_scores[clean_url] = url_scores.get(clean_url, 0) + 1
+                            heapq.heappush(
+                                priority_queue,
+                                (-url_scores[clean_url], next(order_counter), clean_url)
+                            )
+                        else:
+                            if clean_url not in visited_pages and clean_url not in queued_pages:
+                                q.append(clean_url)
+                                queued_pages.add(clean_url)
 
             if state_file and checkpoint_every > 0 and len(visited_pages) % checkpoint_every == 0:
                 state = {
@@ -367,13 +419,16 @@ def crawl_domains(
                     "allowed_domain": allowed_domain,
                     "max_pages": max_pages,
                     "visited_pages": list(visited_pages),
-                    "queued_pages": list(queued_pages),
-                    "queue": list(q),
-                    "site_urls": list(site_urls),
-                    "site_links_raw": list(site_links_raw),
-                    "resolved_redirects": resolved_redirects
-                }
-                save_state(state_file, state, log_fp=log_fp)
+                "queued_pages": list(queued_pages),
+                "queue": list(q),
+                "site_urls": list(site_urls),
+                "site_links_raw": list(site_links_raw),
+                "resolved_redirects": resolved_redirects,
+                "priority": priority,
+                "priority_queue": list(priority_queue),
+                "url_scores": url_scores
+            }
+            save_state(state_file, state, log_fp=log_fp)
 
     if state_file:
         state = {
@@ -385,7 +440,10 @@ def crawl_domains(
             "queue": list(q),
             "site_urls": list(site_urls),
             "site_links_raw": list(site_links_raw),
-            "resolved_redirects": resolved_redirects
+            "resolved_redirects": resolved_redirects,
+            "priority": priority,
+            "priority_queue": list(priority_queue),
+            "url_scores": url_scores
         }
         save_state(state_file, state, log_fp=log_fp)
 
@@ -436,7 +494,10 @@ def crawl_domains(
             "queue": list(q),
             "site_urls": list(site_urls),
             "site_links_raw": list(site_links_raw),
-            "resolved_redirects": resolved_redirects
+            "resolved_redirects": resolved_redirects,
+            "priority": priority,
+            "priority_queue": list(priority_queue),
+            "url_scores": url_scores
         }
         save_state(state_file, state, log_fp=log_fp)
 
@@ -456,6 +517,7 @@ if __name__ == "__main__":
     parser.add_argument("--resolve-limit", type=int, default=DEFAULT_RESOLVE_LIMIT)
     parser.add_argument("--resolve-only", action="store_true")
     parser.add_argument("--max-path-depth", type=int, default=DEFAULT_MAX_PATH_DEPTH)
+    parser.add_argument("--priority", action="store_true")
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
 
@@ -481,7 +543,8 @@ if __name__ == "__main__":
         resolve_redirects=args.resolve_redirects,
         resolve_limit=args.resolve_limit,
         resolve_only=args.resolve_only,
-        max_path_depth=args.max_path_depth
+        max_path_depth=args.max_path_depth,
+        priority=args.priority
     )
 
     log_line(f"\n[+] 共提取到站点数量: {len(site_urls)}", log_fp)

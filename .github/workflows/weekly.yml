@@ -31,7 +31,8 @@ jobs:
             --state-file crawl_state.json \
             --log-file crawl.log \
             --site-output sites_raw.txt \
-            --max-path-depth 2
+            --max-path-depth 2 \
+            --priority
 
       - name: Resolve redirects
         run: |

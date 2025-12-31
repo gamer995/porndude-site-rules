@@ -8,6 +8,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import heapq
 import itertools
+import random
 import time
 import urllib.robotparser
 
@@ -26,6 +27,11 @@ REDIRECT_TIMEOUT = 5
 REDIRECT_WORKERS = 8
 DEFAULT_RESOLVE_LIMIT = 200
 DEFAULT_MAX_PATH_DEPTH = 2
+MAX_RETRIES = 3
+RETRY_BASE_DELAY = 1.0
+RETRY_MAX_DELAY = 15.0
+RETRY_JITTER = 0.5
+RETRY_STATUS_CODES = {429, 502, 503, 504}
 
 # 更细的 URL 去重策略：设置保留或忽略的 query 参数
 # KEEP_QUERY_KEYS 非空时，仅保留这些参数；为空时忽略 DROP_QUERY_KEYS 和 utm_*。
@@ -46,15 +52,43 @@ def log_line(msg, log_fp=None):
         log_fp.write(msg + "\n")
         log_fp.flush()
 
+def compute_backoff(attempt, retry_after=None):
+    if retry_after:
+        try:
+            return min(RETRY_MAX_DELAY, float(retry_after))
+        except ValueError:
+            pass
+    delay = RETRY_BASE_DELAY * (2 ** attempt)
+    delay += random.uniform(0, RETRY_JITTER)
+    return min(RETRY_MAX_DELAY, delay)
+
 def get_html(url, session=None, log_fp=None):
-    try:
-        client = session if session is not None else requests
-        resp = client.get(url, headers=headers, timeout=10)
-        resp.raise_for_status()
-        return resp.text
-    except Exception as e:
-        log_line(f"[!] 请求出错: {url} -> {e}", log_fp)
-        return None
+    client = session if session is not None else requests
+    last_error = None
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            resp = client.get(url, headers=headers, timeout=10)
+            if resp.status_code in RETRY_STATUS_CODES:
+                retry_after = resp.headers.get("Retry-After")
+                sleep_for = compute_backoff(attempt, retry_after=retry_after)
+                log_line(
+                    f"[!] 请求受限: {url} -> {resp.status_code}, 休眠 {sleep_for:.1f}s",
+                    log_fp
+                )
+                time.sleep(sleep_for)
+                continue
+            resp.raise_for_status()
+            return resp.text
+        except requests.RequestException as e:
+            last_error = e
+            sleep_for = compute_backoff(attempt)
+            log_line(
+                f"[!] 请求出错: {url} -> {e}, 休眠 {sleep_for:.1f}s",
+                log_fp
+            )
+            time.sleep(sleep_for)
+    log_line(f"[!] 多次重试仍失败: {url} -> {last_error}", log_fp)
+    return None
 
 def normalize_host(host):
     host = host.lower().strip()

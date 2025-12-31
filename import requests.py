@@ -424,17 +424,17 @@ def crawl_domains(
                     "allowed_domain": allowed_domain,
                     "max_pages": max_pages,
                     "visited_pages": list(visited_pages),
-                "queued_pages": list(queued_pages),
-                "queue": list(q),
-                "site_urls": list(site_urls),
-                "site_links_raw": list(site_links_raw),
-                "site_link_counts": site_link_counts,
-                "resolved_redirects": resolved_redirects,
-                "priority": priority,
-                "priority_queue": list(priority_queue),
-                "url_scores": url_scores
-            }
-            save_state(state_file, state, log_fp=log_fp)
+                    "queued_pages": list(queued_pages),
+                    "queue": list(q),
+                    "site_urls": list(site_urls),
+                    "site_links_raw": list(site_links_raw),
+                    "site_link_counts": site_link_counts,
+                    "resolved_redirects": resolved_redirects,
+                    "priority": priority,
+                    "priority_queue": list(priority_queue),
+                    "url_scores": url_scores
+                }
+                save_state(state_file, state, log_fp=log_fp)
 
     if state_file:
         state = {
